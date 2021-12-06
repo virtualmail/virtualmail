@@ -1,0 +1,314 @@
+openapi: '3.0.2'
+info:
+  title: Virtualmail API
+  version: '1.0'
+  description: |
+    A unique email address is required to create an AWS account. 
+    This Virtualmail solution provides a means to create and manage
+    virtual mailboxes thru an API. A virtual mailbox forwards all received email
+    to a set of recipients defined for each virtual account. All received email 
+    can also be forwarded to a shared email account, for example to a company
+    internal support team (admin account).
+    
+    The permitted domains for the virtual email accounts are defined in the Virtualmail
+    configuration. The recipient addresses must reside under the permitted recipient
+    domains list also defined in the configuration. 
+ 
+    Every account must have an owner. The owner is the user who is allowed to
+    make changes to the Virtualmail account's configuration. This must be
+    enforced by the application that is utilizing this API. The owner 
+    address' domain must be on the Virtualmail permitted owner domains list
+    defined in the configuration.
+
+    If a Virtualmail address is set **protected=True** then any changes 
+    (modify, delete) can only be made directly into the database. Attempts
+    to change a protected account through the API will result in failure.
+    This option is intended to be used for system accounts and should not
+    be available for the end used. Default is protected=False.  
+  
+    If a Virtualmail address is set **managed=True** then the recipients will
+    not receive root account password change emails. If the passsword recovery
+    procedure is initiated for a managed account then only the admin account will
+    recieve the password recovery email. Default is managed=True. 
+tags:
+  - name: virtual-account-management
+paths:
+  /add:
+    post:
+      tags:
+        - virtual-account-management
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        description: A JSON object containing Virtual Account information
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/add'
+            example:
+              virtualemail: example.vmail@virtual.domain.tld
+              owner:  example.newowner@domain.tld
+              recipients: recipient1@domain.tld, recipient2@domain.tld
+      description: Add new Virtualmail address
+      responses:
+        '200':
+          description: Action result JSON object
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        '400':
+          description: Request error; action result JSON object
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+  /get:
+    post:
+      tags:
+        - virtual-account-management
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        description: A JSON object containing Virtual Account information
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/get'
+            example:
+              virtualemail: example.vmail@domain.tld
+      description: Get configuration values for a Virtualmail Account
+      responses:
+        '200':
+          description: Action result JSON
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/getresult'
+        '400':
+          description: Request error; action result JSON
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+  /delete:
+    post:
+      tags:
+        - virtual-account-management
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        description: A JSON object containing Virtual Account information
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/delete'
+            example:
+              virtualemail: example.vmail@domain.tld
+              owner:  example.owner@domain.tld
+      description: Delete a Virtualmail address
+      responses:
+        '200':
+          description: Action result JSON is returned
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        '400':
+          description: Request error, action result JSON is returned
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+  /modify:
+    post:
+      tags:
+        - virtual-account-management
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        description: A JSON object containing Virtual Account information
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/modify'
+            example:
+              virtualemail: example.vmail@virtual.domain.tld
+              owner:  example.newowner@domain.tld
+              recipients: example.recipient1@domain.tld, example.recipient2@domain.tld
+      description: Modify an existing Virtualmail address
+      responses:
+        '200':
+          description: Action result JSON is returned
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        '400':
+          description: Request error, action result JSON is returned
+          content: 
+            application/json:
+              schema:
+                $ref: '#/components/schemas/actionresult'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    error:
+      type: object
+      properties:
+        message:
+          type: string
+    actionresult:
+      type: object
+      required:
+        - virtualemail
+        - status
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail Address
+        status:
+          type: string
+          description: Status of requested action
+          pattern: "^(OK|FAIL)$"
+        message:
+          type: string
+          description: Additional messages in case of failures
+    getresult:
+      type: object
+      required:
+        - virtualemail
+        - status
+        - result
+        - action
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail address 
+        status:
+          type: string
+          pattern: "^(OK|FAIL)$"
+        action:
+          type: string
+        result:
+          type: object
+          description: Virtualmail address propery object; null if account does not exist
+          required:
+            - virtualemail
+            - owner
+            - recipients
+            - protected
+            - managed
+          properties:
+            virtualemail:
+              type: string
+              description: Virtualmail address
+            owner:
+              type: string
+              description: Owner email address
+            recipients:
+              type: string
+              description: Json array or a comma separated list of recipient email addresses
+            protected:
+              type: boolean
+              description: Is Virtualmail address protected
+            managed:
+              type: boolean
+              description: Is the Virtualmail address a managed address
+            
+    get:
+      type: object
+      required:
+        - virtualemail
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail address
+    delete:
+      type: object
+      required:
+        - virtualemail
+        - owner
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail address
+        owner:
+          type: string
+          description: Owner email address
+    modify:
+      type: object
+      required:
+        - virtualemail
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail address
+        owner:
+          type: string
+          description: Owner email address
+        recipients:
+          type: string
+          description: Json array or a comma separated list of recipient email addresses
+        protected:
+          type: boolean
+          description: Is Virtualmail address protected
+        managed:
+          type: boolean
+          description: Is the Virtualmail address a managed address
+    add:
+      type: object
+      required:
+        - virtualemail
+        - owner
+        - recipients
+      properties:
+        virtualemail:
+          type: string
+          description: Virtualmail address
+        owner:
+          type: string
+          description: Owner email address
+        recipients:
+          type: string
+          description: Json array or a comma separated list of recipient email addresses
+        protected:
+          type: boolean
+          default: false
+          description: Is Virtualmail address protected
+        managed:
+          type: boolean
+          default: true
+          description: Is the Virtualmail address a managed address

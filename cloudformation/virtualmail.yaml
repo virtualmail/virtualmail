@@ -1,0 +1,1254 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Virtualmail resource stack
+
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Operational parameters
+        Parameters:
+          - ContainerVersion
+      - Label:
+          default: Deployment options
+        Parameters:
+          - ApiEndpointType
+          - UseKms
+          - DDBTableArn
+          - DDBLogTableArn
+          - StoredEmailLifecycleDays
+          - SesUseScan
+          - SesTlsPolicy
+          - InjectorAwsPrincipalArns
+      - Label:
+          default: Advanced use only
+        Parameters:
+          - DeploymentPrefix
+      - Label:
+          default: Virtualmail configuration
+        Parameters:
+          - VirtualmailDomains
+          - MasterEmail
+          - BouncesEmail
+          - DefaultSender
+          - OwnerDomains
+          - RecipientDomains
+          - EmailFilter
+          - RestrictedAccesskeys
+      - Label:
+          default: Public Api configuration; leave all empty if you selected private endpoint
+        Parameters:
+          - PublicApiCidrs
+      - Label:
+          default: Private Api configuration; leave all empty if you selected public endpoint
+        Parameters:
+          - PrivateApiVpc
+          - PrivateApiSubnets
+          - PrivateApiCidr1
+          - PrivateApiCidr2
+          - PrivateApiCidr3
+          - PrivateApiCidr4
+          - PrivateApiCidr5
+
+
+Parameters:
+  SesUseScan: 
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Use SES virus and spam-scanning for inbound mail" 
+
+  SesTlsPolicy: 
+    Type: String
+    Default: "Optional"
+    AllowedValues:
+      - "Optional"
+      - "Require"
+    Description: "TLS policy for inbound mail" 
+
+  UseKms: 
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Use KMS for S3 encryption" 
+
+  DDBTableArn:
+    Type: String
+    Default: ""
+    Description: Arn for DDB Table for data; leave empty to create new
+
+  DDBLogTableArn:
+    Type: String
+    Default: ""
+    Description: Arn for DDB Table for logs; leave empty to create new
+
+  DeploymentPrefix:
+    Type: String
+    Default: "Virtualmail"
+    Description: Do not change, unless deploying multiple deployments on same account / region
+
+  VirtualmailDomains:
+    Type: CommaDelimitedList
+    Default: test.qwe.fi
+    Description: "A comma delimited list of recipient domains" 
+
+  StoredEmailLifecycleDays:
+    Type: Number
+    MinValue: 1
+    Default: 730
+    Description: "Days to store email messages in S3" 
+
+  ContainerVersion: 
+    Type: String
+    Default: latest
+    Description: "Container version for Lambda functions" 
+
+  BouncesEmail: 
+    Type: String
+    Default: '{ "%": null }'
+    Description: "Bounce address configuration field; see documentation" 
+
+  DefaultSender: 
+    Type: String
+    Default: '{ "%": null }'
+    Description: "Default sender configuration field; see documentation" 
+
+  EmailFilter: 
+    Type: String
+    Default: '[]'
+    Description: "Email filter configuration field; see documentation" 
+
+  MasterEmail:
+    Type: String
+    Default: '{ "%": null }'
+    Description: "Master email configuration field; see documentation" 
+
+  OwnerDomains:
+    Type: String
+    Default: '[]'
+    Description: "Owner domains configuration field; see documentation" 
+
+  RecipientDomains:
+    Type: String
+    Default: '[]'
+    Description: "Recipient domains configuration field; see documentation" 
+
+  RestrictedAccesskeys:
+    Type: String
+    Default: '{}'
+    Description: "Restricted accesskeys configuration field; see documentation" 
+
+  InjectorAwsPrincipalArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Comma separated list of AWS Principal ARNs to allow to inject messages into Virtualmail; example ARN arn:aws:iam::123456789012:root"
+
+  ApiEndpointType:
+    Type: String
+    AllowedValues:
+      - public
+      - private
+    Default: public
+    Description: "Select public or private endpoint for Virtualmail API"
+
+  PublicApiCidrs:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Comma separated list of CIDR blocks allowed access to the API Gateway public endpoint; if you update this value, you need to manually deploy the api to all desired stages"
+
+  PrivateApiVpc:
+    Type: String
+    Default: ""
+    Description: "VPC id for API Gateway private endpoint"
+
+  PrivateApiSubnets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: "Comma separated list of Subnets for API Gateway private endpoint"
+
+  PrivateApiCidr1:
+    Type: String
+    Default: ""
+    Description: "CIDR block #1 for accepting API Gateway clients in private api; example 10.123.45.6/32"
+
+  PrivateApiCidr2:
+    Type: String
+    Default: ""
+    Description: "CIDR block #2 for accepting API Gateway clients in private api"
+
+  PrivateApiCidr3:
+    Type: String
+    Default: ""
+    Description: "CIDR block #3 for accepting API Gateway clients in private api"
+
+  PrivateApiCidr4:
+    Type: String
+    Default: ""
+    Description: "CIDR block #4 for accepting API Gateway clients in private api"
+
+  PrivateApiCidr5:
+    Type: String
+    Default: ""
+    Description: "CIDR block #5 for accepting API Gateway clients in private api"
+
+
+Conditions:
+  CondHasInjectorPrincipals: !Equals
+    - !Join [ '', !Ref InjectorAwsPrincipalArns ]
+    - ""
+
+  CondUseKms: !Equals
+    - !Ref UseKms
+    - "true"
+
+  CondCreateDDBTable: !Equals [ "", !Ref DDBTableArn ]
+  CondCreateDDBLogsTable: !Equals [ "", !Ref DDBLogTableArn ]
+
+  ApiEndpointTypePublic: !Equals [ "public", !Ref ApiEndpointType ]
+  ApiEndpointTypePrivate: !Equals [ "private", !Ref ApiEndpointType ]
+
+  HasPrivateApiCidr1: !And
+    - !Not [ !Equals [ "", !Ref PrivateApiCidr1 ] ]
+    - !Condition ApiEndpointTypePrivate
+
+  HasPrivateApiCidr2: !And
+    - !Not [ !Equals [ "", !Ref PrivateApiCidr2 ] ]
+    - !Condition ApiEndpointTypePrivate
+
+  HasPrivateApiCidr3: !And
+    - !Not [ !Equals [ "", !Ref PrivateApiCidr3 ] ]
+    - !Condition ApiEndpointTypePrivate
+
+  HasPrivateApiCidr4: !And
+    - !Not [ !Equals [ "", !Ref PrivateApiCidr4 ] ]
+    - !Condition ApiEndpointTypePrivate
+
+  HasPrivateApiCidr5: !And
+    - !Not [ !Equals [ "", !Ref PrivateApiCidr5 ] ]
+    - !Condition ApiEndpointTypePrivate
+
+
+Resources:
+  SESRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties: 
+      RuleSetName: !Ref DeploymentPrefix
+
+
+  SesRule:
+    Type: AWS::SES::ReceiptRule
+    Properties: 
+      RuleSetName: !Ref SESRuleSet
+      Rule: 
+        Actions: 
+          - LambdaAction: 
+              FunctionArn: !GetAtt VirtualmailGatekeeperFunction.Arn
+              InvocationType: RequestResponse
+          - S3Action: 
+              BucketName: !Ref VirtualmailBucket
+              KmsKeyArn: !If
+                - CondUseKms
+                - !GetAtt KmsKey.Arn
+                - !Ref AWS::NoValue
+              TopicArn: !Ref SNSTopicSesMail
+        Enabled: true
+        Name: Virtualmail
+        Recipients: !Ref VirtualmailDomains
+        ScanEnabled: !Ref SesUseScan
+        TlsPolicy: !Ref SesTlsPolicy
+
+
+  KmsKey:
+    Type: AWS::KMS::Key
+    Condition: CondUseKms
+    Properties: 
+      Description: "Key used with Virtualmail"
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy: 
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: "Allow SES to use key"
+            Effect: "Allow"
+            Principal:
+              Service: "ses.amazonaws.com"              
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+
+
+  VirtualmailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: "Private"
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - BucketKeyEnabled: !If
+            - CondUseKms
+            - true
+            - !Ref AWS::NoValue
+            ServerSideEncryptionByDefault: !If
+              - CondUseKms
+              - SSEAlgorithm: "aws:kms"
+                KMSMasterKeyID: !GetAtt KmsKey.Arn
+              - SSEAlgorithm: AES256
+      LifecycleConfiguration: 
+        Rules:
+          - ExpirationInDays: !Ref StoredEmailLifecycleDays
+            Id: "Remove old mail"
+            Status: "Enabled"
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+
+  VirtualmailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref VirtualmailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service: "ses.amazonaws.com"
+            Action: "s3:PutObject"
+            Resource: !Sub "arn:aws:s3:::${VirtualmailBucket}/*"
+            Condition:
+              StringEquals:
+                "AWS:Referer": !Ref "AWS::AccountId"
+
+
+  SNSTopicAdmin: 
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${DeploymentPrefix}-AdminNotifications"
+
+
+  SNSTopicSesMail: 
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${DeploymentPrefix}-SESMail"
+
+
+  SNSPolicySesMail:
+    Type: AWS::SNS::TopicPolicy
+    Properties: 
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service: "ses.amazonaws.com"
+            Action: "sns:Publish"
+            Resource: !Ref SNSTopicSesMail
+            Condition:
+              StringEquals:
+                "AWS:SourceOwner": !Ref "AWS::AccountId"
+      Topics: 
+        - !Ref SNSTopicSesMail
+
+
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties: 
+      Endpoint: !GetAtt VirtualmailHandlerFunction.Arn
+      Protocol: lambda
+      Region: !Ref "AWS::Region"
+      TopicArn: !Ref SNSTopicSesMail
+
+
+  VirtualmailInjectQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+
+
+  VirtualmailInjectQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties: 
+      PolicyDocument:
+        Id: "policy"
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "sqs:*"
+            Resource: !GetAtt VirtualmailInjectQueue.Arn
+          - !If
+            - CondHasInjectorPrincipals
+            - !Ref AWS::NoValue
+            - Effect: "Allow"
+              Principal:
+                AWS: !Ref InjectorAwsPrincipalArns
+              Action: "sqs:SendMessage"
+              Resource: !GetAtt VirtualmailInjectQueue.Arn
+      Queues: 
+        - !Ref VirtualmailInjectQueue      
+
+
+  VirtualmailInjectQueuePolicyLambdaInvoke:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt VirtualmailHandlerFunction.Arn
+      Principal: "sqs.amazonaws.com"
+      SourceArn: !GetAtt VirtualmailInjectQueue.Arn
+
+
+  ForwarderLambdaFunctionEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt VirtualmailInjectQueue.Arn
+      FunctionName: !GetAtt VirtualmailHandlerFunction.Arn
+
+
+  VirtualmailAddresses:
+    Type: "AWS::DynamoDB::Table"
+    Condition: CondCreateDDBTable
+    Properties:
+      AttributeDefinitions: 
+        - AttributeName: virtualemail
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: virtualemail
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+
+  VirtualmailLogs:
+    Type: "AWS::DynamoDB::Table"
+    Condition: CondCreateDDBLogsTable
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: id
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+
+  IAMRoleGatekeeper:  
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "Lambda execution role for Gatekeeper-function in stack ${AWS::StackName}"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies: 
+        - PolicyName: "Allow-sns"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "sns:Publish"
+                Resource: !Ref SNSTopicAdmin
+        - PolicyName: "Allow-ddb"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "dynamodb:GetItem"
+                Resource: !If
+                  - CondCreateDDBTable
+                  - !GetAtt VirtualmailAddresses.Arn
+                  - !Ref DDBTableArn
+
+
+  PermissionGatekeeperInvoke:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt VirtualmailGatekeeperFunction.Arn
+      Principal: "ses.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+
+
+  VirtualmailGatekeeperFunction:
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: 
+        ImageUri: !Join
+          - ":"
+          - - !ImportValue Virtualmail-ECRRepository
+            - !Ref ContainerVersion
+      Description: "Virtualmail Gatekeeper"
+      Environment: 
+        Variables:
+          "ddb_tablename": !If 
+            - CondCreateDDBTable
+            - !Ref VirtualmailAddresses
+            - !Select
+              - "1"
+              - !Split ["/", !Ref DDBTableArn]
+          "email_domains": !Join
+            - ""
+            - - "[\""
+              - !Join [ "\",\"",  !Ref VirtualmailDomains ]
+              - "\"]"
+      ImageConfig:
+        Command:
+          - "virtualmail.gatekeeper.lambda_handler"
+      MemorySize: 128
+      PackageType: Image
+      Role: !GetAtt IAMRoleGatekeeper.Arn
+      Timeout: 10
+
+
+  IAMRoleHandler:  
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "Lambda execution role for Handler-function in stack ${AWS::StackName}"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies: 
+        - !If
+          - CondUseKms
+          - PolicyName: "Allow-using-KMS-key"
+            PolicyDocument: 
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "kms:Decrypt"
+                    - "kms:GenerateDataKey"
+                  Resource: !GetAtt KmsKey.Arn
+          - !Ref AWS::NoValue
+        - PolicyName: "Allow-s3"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "s3:ListAllMyBuckets"
+                Resource: "arn:aws:s3:::*"
+              - Effect: "Allow"
+                Action: 
+                  - "s3:ListBucket"
+                  - "s3:GetBucketLocation"
+                Resource: !Sub "arn:aws:s3:::${VirtualmailBucket}"
+              - Effect: "Allow"
+                Action: "s3:GetObject"
+                Resource: !Sub "arn:aws:s3:::${VirtualmailBucket}/*"
+        - PolicyName: "Allow-sns-publish"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "sns:Publish"
+                Resource: !Ref "SNSTopicAdmin"
+        - PolicyName: "Allow-ddb"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                Resource: !If
+                  - CondCreateDDBTable
+                  - !GetAtt VirtualmailAddresses.Arn
+                  - !Ref DDBTableArn
+              - Effect: "Allow"
+                Action: "dynamodb:PutItem"
+                Resource: !If
+                  - CondCreateDDBLogsTable
+                  - !GetAtt VirtualmailLogs.Arn
+                  - !Ref DDBLogTableArn
+        - PolicyName: "Allow-ses-sendemail"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "ses:SendEmail"
+                  - "ses:SendRawEmail"
+                Resource: "*"
+        - PolicyName: "Allow-sqs-read"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt VirtualmailInjectQueue.Arn
+
+
+  PermissionHandlerInvoke:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt VirtualmailHandlerFunction.Arn
+      Principal: "sns.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+
+
+  VirtualmailHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: 
+        ImageUri: !Join
+          - ":"
+          - - !ImportValue Virtualmail-ECRRepository
+            - !Ref ContainerVersion
+      Description: "Virtualmail Handler"
+      Environment: 
+        Variables:
+          "ddb_tablename": !If 
+            - CondCreateDDBTable
+            - !Ref VirtualmailAddresses
+            - !Select
+              - "1"
+              - !Split ["/", !Ref DDBTableArn]
+          "ddb_tablename_log": !If 
+            - CondCreateDDBLogsTable
+            - !Ref VirtualmailLogs
+            - !Select
+              - "1"
+              - !Split ["/", !Ref DDBLogTableArn]
+          "email_domains": !Join
+            - ""
+            - - "[\""
+              - !Join [ "\",\"",  !Ref VirtualmailDomains ]
+              - "\"]"
+          "email_filter": !Ref EmailFilter
+          "bounces_email": !Ref BouncesEmail
+          "default_sender": !Ref DefaultSender
+          "master_email": !Ref MasterEmail
+          "sns_admin": !Ref SNSTopicAdmin
+      ImageConfig:
+        Command:
+          - "virtualmail.handler.lambda_handler"
+      MemorySize: 128
+      PackageType: Image
+      Role: !GetAtt IAMRoleHandler.Arn
+      Timeout: 10
+
+
+  IAMRoleVirtualmailApiFunction:  
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "Lambda execution role for API-function in stack ${AWS::StackName}"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies: 
+        - PolicyName: "Allow-sns-publish"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "sns:Publish"
+                Resource: !Ref "SNSTopicAdmin"
+        - PolicyName: "Allow-ddb"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "dynamodb:GetItem"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:DeleteItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:UpdateItem"
+                Resource: !If
+                  - CondCreateDDBTable
+                  - !GetAtt VirtualmailAddresses.Arn
+                  - !Ref DDBTableArn
+
+
+  PermissionVirtualmailApiFunctionInvoke:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt VirtualmailApiFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
+
+
+  VirtualmailApiFunction:
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: 
+        ImageUri: !Join
+          - ":"
+          - - !ImportValue Virtualmail-ECRRepository
+            - !Ref ContainerVersion
+      Description: "Virtualmail API-function"
+      Environment: 
+        Variables:
+          "ddb_tablename": !If 
+            - CondCreateDDBTable
+            - !Ref VirtualmailAddresses
+            - !Select
+              - "1"
+              - !Split ["/", !Ref DDBTableArn]
+          "email_domains": !Join
+            - ""
+            - - "[\""
+              - !Join [ "\",\"",  !Ref VirtualmailDomains ]
+              - "\"]"
+          "owner_domains": !Ref OwnerDomains
+          "recipient_domains": !Ref RecipientDomains
+          "restricted_access_keys": !Ref RestrictedAccesskeys
+          "sns_admin": !Ref SNSTopicAdmin
+      ImageConfig:
+        Command:
+          - "virtualmail.api.lambda_handler"
+      MemorySize: 128
+      PackageType: Image
+      Role: !GetAtt IAMRoleVirtualmailApiFunction.Arn
+      Timeout: 10
+
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties: 
+      ApiKeySourceType: HEADER
+      Description: Virtualmail Api
+      DisableExecuteApiEndpoint: false
+      EndpointConfiguration: !If
+        - ApiEndpointTypePublic
+        - Types:
+            - REGIONAL
+        - Types:
+            - PRIVATE
+          VpcEndpointIds:
+            - !Ref ApiVpcEndpoint
+      Name: Virtualmail
+      Policy: !If
+        - ApiEndpointTypePublic
+        - !Join 
+          - ""
+          - - |
+              {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                          "Effect": "Deny",
+                          "Principal": "*",
+                          "Action": "execute-api:Invoke",
+                          "Resource": "execute-api:/*/*/*",
+                          "Condition": {
+                              "NotIpAddress": {
+                                  "aws:SourceIp": [
+            - !Join
+              - ""
+              - - "\""
+                - !Join [ "\", \"", !Ref PublicApiCidrs ]
+                - "\""              
+            - | 
+              ]
+                              }
+                          }
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Principal": "*",
+                          "Action": "execute-api:Invoke",
+                          "Resource": "execute-api:/*/*/*"
+                      }
+                  ]
+              }
+        - !Sub |
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Deny",
+                      "Principal": "*",
+                      "Action": "execute-api:Invoke",
+                      "Resource": "execute-api:/*/*/*",
+                      "Condition": {
+                          "StringNotEquals": {
+                              "aws:sourceVpce": "${ApiVpcEndpoint}"
+                          }
+                      }
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Principal": "*",
+                      "Action": "execute-api:Invoke",
+                      "Resource": "execute-api:/*/*/*"
+                  }
+              ]
+          }
+
+
+
+  ApiResourceAdd:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: add
+      RestApiId: !Ref Api
+
+
+  ApiMethodAddPost:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceAdd
+      RestApiId: !Ref Api
+      HttpMethod: POST
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VirtualmailApiFunction.Arn}/invocations"
+
+
+  ApiMethodAddOptions:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceAdd
+      RestApiId: !Ref Api
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: "200"
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+
+
+  ApiResourceDelete:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: delete
+      RestApiId: !Ref Api
+
+
+  ApiMethodDeletePost:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceDelete
+      RestApiId: !Ref Api
+      HttpMethod: POST
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VirtualmailApiFunction.Arn}/invocations"
+
+
+  ApiMethodDeleteOptions:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceDelete
+      RestApiId: !Ref Api
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: "200"
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+
+
+  ApiResourceGet:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: get
+      RestApiId: !Ref Api
+
+
+  ApiMethodGetPost:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceGet
+      RestApiId: !Ref Api
+      HttpMethod: POST
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VirtualmailApiFunction.Arn}/invocations"
+
+
+  ApiMethodGetOptions:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceGet
+      RestApiId: !Ref Api
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: "200"
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+
+
+  ApiResourceModify:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: modify
+      RestApiId: !Ref Api
+
+
+  ApiMethodModifyPost:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceModify
+      RestApiId: !Ref Api
+      HttpMethod: POST
+      Integration: 
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VirtualmailApiFunction.Arn}/invocations"
+
+
+  ApiMethodModifyOptions:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      ResourceId: !Ref ApiResourceModify
+      RestApiId: !Ref Api
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: 'Empty'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiMethodAddPost
+      - ApiMethodAddOptions
+      - ApiMethodDeletePost
+      - ApiMethodDeleteOptions
+      - ApiMethodGetPost
+      - ApiMethodGetOptions
+      - ApiMethodModifyPost
+      - ApiMethodModifyOptions
+    Properties: 
+      RestApiId: !Ref Api
+      StageName: prod
+
+
+  ApiVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ApiEndpointTypePrivate
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: "*"
+            Effect: Allow
+            Resource: "*"
+            Principal: "*"
+      SecurityGroupIds: 
+        - !Ref PrivateApiVpcEndpointSG
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.execute-api"
+      SubnetIds: !Ref PrivateApiSubnets
+      VpcEndpointType: Interface
+      VpcId: !Ref PrivateApiVpc
+
+
+  PrivateApiVpcEndpointSG:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ApiEndpointTypePrivate
+    Properties: 
+      GroupDescription: "Virtualmail API Gateway endpoint security group"      
+      Tags: 
+        - Key: Name
+          Value: virtualmail-api-endpoint
+      VpcId: !Ref PrivateApiVpc
+
+
+  PrivateApiVpcEndpointSGIngress1:
+   Type: 'AWS::EC2::SecurityGroupIngress'
+   Condition: HasPrivateApiCidr1
+   Properties:
+      GroupId: !Ref PrivateApiVpcEndpointSG
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref PrivateApiCidr1
+
+
+  PrivateApiVpcEndpointSGIngress2:
+   Type: 'AWS::EC2::SecurityGroupIngress'
+   Condition: HasPrivateApiCidr2
+   Properties:
+      GroupId: !Ref PrivateApiVpcEndpointSG
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref PrivateApiCidr2
+
+
+  PrivateApiVpcEndpointSGIngress3:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Condition: HasPrivateApiCidr3
+    Properties:
+      GroupId: !Ref PrivateApiVpcEndpointSG
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref PrivateApiCidr3
+
+
+  PrivateApiVpcEndpointSGIngress4:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Condition: HasPrivateApiCidr4
+    Properties:
+      GroupId: !Ref PrivateApiVpcEndpointSG
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref PrivateApiCidr4
+
+
+  PrivateApiVpcEndpointSGIngress5:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Condition: HasPrivateApiCidr5
+    Properties:
+      GroupId: !Ref PrivateApiVpcEndpointSG
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref PrivateApiCidr5
+
+
+
+
+  ApigwCloudWatchRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "apigateway.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+
+  ApigwAccount:
+    Type: 'AWS::ApiGateway::Account'
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApigwCloudWatchRole.Arn
+
+
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: ApiDeployment
+    Properties: 
+      ApiStages: 
+        - ApiId: !Ref Api
+          Stage: prod
+      Description: "Virtualmail usage plan"
+      UsagePlanName: virtualmail
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: ApiDeployment
+    Properties: 
+      Description: Virtualmail api key
+      Enabled: true
+      StageKeys: 
+        - RestApiId: !Ref Api
+          StageName: prod
+
+
+  ApiUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties: 
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
+
+
+Outputs:
+  ApiKeyId:
+    Description: Api key id
+    Value: !Ref ApiKey
+
+  InjectQueueUrl:
+    Description: Url for the injection queue for Virtualmail
+    Value: !Ref VirtualmailInjectQueue
+
+  InjectQueueArn:
+    Description: Arn for the injection queue for Virtualmail
+    Value: !GetAtt VirtualmailInjectQueue.Arn
+
+  ApiGatewayId:
+    Value: !Ref Api
+    Description: Api Gateway id
+
+  DeployedApiEndpointType:
+    Value: !Ref ApiEndpointType
+    Description: Deployed endpoint type Virtualmail Api
+
+  DnsName:
+    Value: !If
+      - ApiEndpointTypePrivate
+      - !Select
+        - "1" 
+        - Fn::Split:
+          - ':'
+          - Fn::Select:
+            - "0"
+            - !GetAtt ApiVpcEndpoint.DnsEntries
+      - !Sub "${Api}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: Dns name for Api Endpoint
+
+  ApiHostname:
+    Value: !Sub "${Api}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: Hostname for api calls
+
+  ApiRootUrl:
+    Value: !Join
+      - ""
+      - - "https://"
+        - !If
+          - ApiEndpointTypePrivate
+          - !Select
+            - "1" 
+            - Fn::Split:
+              - ':'
+              - Fn::Select:
+                - "0"
+                - !GetAtt ApiVpcEndpoint.DnsEntries
+          - !Sub "${Api}.execute-api.${AWS::Region}.amazonaws.com"
+        - "/prod"
+    Description: Url Api Endpoint root
+    
+
+  SnsTopicAdminArn:
+    Value: !Ref SNSTopicAdmin
+    Description: Arn for Admin SNS Topic
+

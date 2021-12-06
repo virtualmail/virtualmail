@@ -1,0 +1,369 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: |
+  Virtualmail repository and build pipeline
+
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Options
+        Parameters:
+          - DeployBuildPipeline
+      - Label:
+          default: CodeCommit configuration
+        Parameters:
+          - RepositoryName
+          - RepositoryDescription
+          - BranchName
+      - Label:
+          default: Advanced parameters
+        Parameters:
+          - BuilderImage
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: |
+      Name for git repository and function container repository.
+      Note that this must match what is deployed in the stackset to all regions.
+    Default: virtualmail
+
+  RepositoryDescription:
+    Type: String
+    Description: Git repository description
+    Default: Virtualmail local version git repository
+
+  BranchName:
+    Type: String
+    Description: Name for git branch to trigger pipeline
+    Default: main
+
+  BuilderImage:
+    Type: String
+    Description: CodeBuild image (see https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html)
+    Default: aws/codebuild/standard:5.0
+
+  DeployBuildPipeline:
+    Type: String
+    Description: Deploy build pipeline for container images
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "true"
+
+
+Conditions:
+  CondDeployBuildPipeline: !Equals [ !Ref DeployBuildPipeline, "true" ]
+
+
+Resources:
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: MUTABLE
+      RepositoryName: !Ref RepositoryName
+      Tags:
+        - Key: Name
+          Value: !Ref RepositoryName
+
+
+  GitRepository:
+    Type: AWS::CodeCommit::Repository
+    Condition: CondDeployBuildPipeline
+    Properties:
+      RepositoryDescription: !Ref RepositoryDescription
+      RepositoryName: !Ref RepositoryName
+
+
+  PipelineArtifactStore:
+    Type: AWS::S3::Bucket
+    Condition: CondDeployBuildPipeline
+    Properties:
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+
+  CWLGContainerLogs:
+    Type: AWS::Logs::LogGroup
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      LogGroupName: !Sub "build-${RepositoryName}"
+      RetentionInDays: 14
+
+
+  IAMRoleCodePipeline:  
+    Type: AWS::IAM::Role
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "codepipeline.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies: 
+        - PolicyName: "Allow-codecommit"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "codecommit:GetBranch"
+                  - "codecommit:GetCommit"
+                  - "codecommit:UploadArchive"
+                  - "codecommit:GetUploadArchiveStatus"   
+                  - "codecommit:CancelUploadArchive"
+                Resource: !GetAtt GitRepository.Arn
+        - PolicyName: "Allow-s3"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "s3:ListAllMyBuckets"
+                Resource: "arn:aws:s3:::*"
+              - Effect: "Allow"
+                Action: 
+                  - "s3:ListBucket"
+                  - "s3:GetBucketLocation"
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactStore}"
+              - Effect: "Allow"
+                Action: 
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:Delete*"
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactStore}/*"
+        - PolicyName: "Allow-codebuild"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                Resource:
+                  - !GetAtt CodeBuildProject.Arn
+
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      ArtifactStore: 
+        Location: !Ref PipelineArtifactStore
+        Type: S3
+      RestartExecutionOnUpdate: false
+      RoleArn: !GetAtt IAMRoleCodePipeline.Arn
+      Stages: 
+        - Actions: 
+            - ActionTypeId: 
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !GetAtt GitRepository.Name
+                BranchName: !Ref BranchName
+                PollForSourceChanges: "false"
+                OutputArtifactFormat: CODE_ZIP
+              InputArtifacts: []
+              Name: Source
+              OutputArtifacts: 
+                - Name: Artifact_Code
+              RunOrder: 1
+          Name: Source
+        - Actions: 
+            - ActionTypeId: 
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+                EnvironmentVariables: !Sub |
+                  [
+                    { 
+                      "name": "REPOSITORY_URI",
+                      "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName}",
+                      "type": "PLAINTEXT"
+                    },
+                    { 
+                      "name": "ECR_ADDRESS",
+                      "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com",
+                      "type": "PLAINTEXT"
+                    },
+                    { 
+                      "name": "AWS_DEFAULT_REGION",
+                      "value": "${AWS::Region}",
+                      "type": "PLAINTEXT"
+                    }                    
+                  ]
+              InputArtifacts:
+                -  Name: Artifact_Code
+              Name: Build
+              OutputArtifacts:
+                - Name: Artifact_Build
+              RunOrder: 2
+          Name: Build
+
+
+  IAMRoleCodeBuild:  
+    Type: AWS::IAM::Role
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies: 
+        - PolicyName: "Allow-logs"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - PolicyName: "Allow-s3"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "s3:ListAllMyBuckets"
+                Resource: "arn:aws:s3:::*"
+              - Effect: "Allow"
+                Action: 
+                  - "s3:ListBucket"
+                  - "s3:GetBucketLocation"
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactStore}"
+              - Effect: "Allow"
+                Action: 
+                  - "s3:PutObject*"
+                  - "s3:GetObject*"
+                  - "s3:Delete*"
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactStore}/*"
+        - PolicyName: "Allow-ecr"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                Resource:
+                  - "*"
+              - Effect: "Allow"
+                Action:
+                  - "ecr:BatchGetImage"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:PutImage"
+                  - "ecr:UploadLayerPart"
+                Resource:
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryName}"
+
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      Artifacts: 
+        Type: CODEPIPELINE
+      ConcurrentBuildLimit: 1
+      Environment: 
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref BuilderImage
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+      LogsConfig: 
+        CloudWatchLogs:
+          GroupName: !Ref CWLGContainerLogs
+          Status: ENABLED
+          StreamName: build
+      ServiceRole: !GetAtt IAMRoleCodeBuild.Arn
+      Source: 
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 15
+
+
+  CWECodePipelineTriggerRule:
+    Type: AWS::Events::Rule
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !GetAtt GitRepository.Arn
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BranchName
+      RoleArn: !GetAtt IAMRoleCWEPipelineExecutionRole.Arn
+      State: ENABLED
+      Targets: 
+        - Arn: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}"
+          Id: !Ref RepositoryName
+          RoleArn: !GetAtt IAMRoleCWEPipelineExecutionRole.Arn
+
+
+  IAMRoleCWEPipelineExecutionRole:  
+    Type: AWS::IAM::Role
+    Condition: CondDeployBuildPipeline
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service: "events.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies: 
+        - PolicyName: "Allow-codepipeline"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "codepipeline:StartPipelineExecution"
+                Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}"
+
+
+Outputs:
+  EcrRepositoryAddress:
+    Description: Container registry repository address
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName}"
+    Export:
+      Name: "Virtualmail-ECRRepository"
+
+  CodeCommitRepository:
+    Condition: CondDeployBuildPipeline
+    Description: Git repository address 
+    Value: !Sub "codecommit::${AWS::Region}://${RepositoryName}"
