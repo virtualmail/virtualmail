@@ -397,7 +397,10 @@ Resources:
       FifoQueue: true
       QueueName: !If
         - CondHasInjectQueueName
-        - !Ref InjectQueueName
+        - !Join
+          - ""
+          - - !Ref InjectQueueName
+            - ".fifo"
         - !Ref AWS::NoValue
 
 
