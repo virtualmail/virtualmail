@@ -19,6 +19,8 @@ Metadata:
           - StoredEmailLifecycleDays
           - SesUseScan
           - SesTlsPolicy
+          - InjectQueueArn
+          - InjectQueueName
           - InjectorAwsPrincipalArns
       - Label:
           default: Advanced use only
@@ -142,10 +144,20 @@ Parameters:
     Default: '{}'
     Description: "Restricted accesskeys configuration field; see documentation" 
 
+  InjectQueueArn:
+    Type: String
+    Default: ""
+    Description: Arn for an existing queue to use for injected mails; leave empty to create new
+
+  InjectQueueName:
+    Type: String
+    Default: ""
+    Description: Name for a new queue to use for injeted mails; do not add fifo-extension; leave empty if a specific name is not needed
+
   InjectorAwsPrincipalArns:
     Type: CommaDelimitedList
     Default: ""
-    Description: "Comma separated list of AWS Principal ARNs to allow to inject messages into Virtualmail; example ARN arn:aws:iam::123456789012:root"
+    Description: "Comma separated list of AWS Principal ARNs to allow to inject messages into Virtualmail; use only if creating a new queue; example ARN arn:aws:iam::123456789012:root"
 
   ApiEndpointType:
     Type: String
@@ -200,6 +212,9 @@ Conditions:
   CondHasInjectorPrincipals: !Equals
     - !Join [ '', !Ref InjectorAwsPrincipalArns ]
     - ""
+
+  CondCreateInjectQueue: !Equals [ "", !Ref InjectQueueArn ]
+  CondHasInjectQueueName: !Not [ !Equals [ "", !Ref InjectQueueName ]]
 
   CondUseKms: !Equals
     - !Ref UseKms
@@ -377,13 +392,19 @@ Resources:
 
   VirtualmailInjectQueue:
     Type: AWS::SQS::Queue
+    Condition: CondCreateInjectQueue
     Properties:
       ContentBasedDeduplication: true
       FifoQueue: true
+      QueueName: !If
+        - CondHasInjectQueueName
+        - !Ref InjectQueueName
+        - !Ref AWS::NoValue
 
 
   VirtualmailInjectQueuePolicy:
     Type: AWS::SQS::QueuePolicy
+    Condition: CondCreateInjectQueue
     Properties: 
       PolicyDocument:
         Id: "policy"
@@ -412,7 +433,10 @@ Resources:
       Action: "lambda:InvokeFunction"
       FunctionName: !GetAtt VirtualmailHandlerFunction.Arn
       Principal: "sqs.amazonaws.com"
-      SourceArn: !GetAtt VirtualmailInjectQueue.Arn
+      SourceArn: !If
+        - CondCreateInjectQueue
+        - !GetAtt VirtualmailInjectQueue.Arn
+        - !Ref InjectQueueArn
 
 
   ForwarderLambdaFunctionEventSourceMapping:
@@ -420,7 +444,10 @@ Resources:
     Properties:
       BatchSize: 10
       Enabled: true
-      EventSourceArn: !GetAtt VirtualmailInjectQueue.Arn
+      EventSourceArn: !If
+        - CondCreateInjectQueue
+        - !GetAtt VirtualmailInjectQueue.Arn
+        - !Ref InjectQueueArn
       FunctionName: !GetAtt VirtualmailHandlerFunction.Arn
 
 
@@ -612,7 +639,10 @@ Resources:
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                   - sqs:ChangeMessageVisibility
-                Resource: !GetAtt VirtualmailInjectQueue.Arn
+                Resource: !If
+                  - CondCreateInjectQueue
+                  - !GetAtt VirtualmailInjectQueue.Arn
+                  - !Ref InjectQueueArn
 
 
   PermissionHandlerInvoke:
@@ -1198,12 +1228,16 @@ Outputs:
     Value: !Ref ApiKey
 
   InjectQueueUrl:
+    Condition: CondCreateInjectQueue
     Description: Url for the injection queue for Virtualmail
     Value: !Ref VirtualmailInjectQueue
 
   InjectQueueArn:
     Description: Arn for the injection queue for Virtualmail
-    Value: !GetAtt VirtualmailInjectQueue.Arn
+    Value: !If
+      - CondCreateInjectQueue
+      - !GetAtt VirtualmailInjectQueue.Arn
+      - !Ref InjectQueueArn
 
   ApiGatewayId:
     Value: !Ref Api
