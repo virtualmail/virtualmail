@@ -95,7 +95,6 @@ Parameters:
 
   VirtualmailDomains:
     Type: CommaDelimitedList
-    Default: test.qwe.fi
     Description: "A comma delimited list of recipient domains" 
 
   StoredEmailLifecycleDays:
