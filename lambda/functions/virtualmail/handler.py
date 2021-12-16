@@ -248,7 +248,7 @@ def handle_event(event):
         if config.get_value("print_mail_info") is True:
           logger.info("{dash} New email {dash}".format(dash="-"*30))
           logger.info("From:    " + mail_from)
-          logger.info("To:      " + vmail)
+          logger.info("To:      " + listsafe_str(mail_recipients["to"]))
           logger.info("Date:    " + mail_date)
           logger.info("Subject: " + mail_subject)
           logger.info("Vmail:   " + vmail)
