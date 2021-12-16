@@ -228,162 +228,164 @@ def handle_event(event):
       continue
   
     dest_domain = None
+    vmail = None
 
-    try:
-      vmail = None
-      for dest in destinations:
+    for dest in destinations:
+      try:
         dest_domain = dest.split('@')[1]
         if dest_domain in config.get_value("email_domains"):
           vmail = dest
-          break
-      
-      if vmail is None:
-        vmail = get_value_for_domain(
-          config.get_value("default_sender"), 
-          dest_domain
-      )
-
-      if config.get_value("print_mail_info") is True:
-        logger.info("{dash} New email {dash}".format(dash="-"*30))
-        logger.info("From:    " + mail_from)
-        logger.info("To:      " + listsafe_str(mail_recipients["to"]))
-        logger.info("Date:    " + mail_date)
-        logger.info("Subject: " + mail_subject)
-        logger.info("Vmail:   " + vmail)
-        logger.info("Msg:     s3://{}/{}".format(s3bucket, s3key))
-
-    except Exception as e:
-      utils.handle_exception(
-        logger,
-        e, 
-        'looking for destination and s3 values from message'
-      )
-      continue
-    
-    try:
-      log_to_ddb(
-        mail_date, 
-        mail_from, 
-        mail_recipients, 
-        mail_subject, 
-        s3key, 
-        s3bucket,
-        messageid
-      )
-    except PassthroughException as e:
-      t = e.text + "\n\n" + _msg if e.text is not None else _msg
-      utils.handle_exception(logger, e.e, e.when, text=t)
-    except Exception as e:
-      utils.handle_exception(logger, e, 'log inbound email to log ddb', text=_msg)
-        
-    if s3bucket is not None and s3key is not None:
-      try:
-        t = get_email_from_s3(s3bucket, s3key)
-      except Exception as e:
-        utils.handle_exception(e, 'retrieving email from s3', text=_msg)
-        continue
-    else:
-      t = email_body
-
-    efilters = config.get_value("email_filter")
-    recipients = []
-    try:
-      item = ddb.get_item(
-        config.get_value('ddb_tablename'),
-        'virtualemail',
-        vmail.lower()
-      )
-      if item is not None:
-        if (
-          re.search("password-reset-noreply@aws.amazon.com", 
-          mail_from, 
-          re.IGNORECASE
-        ) and ('managed' not in item or item['managed'] != False)):
-          # for a mananged account, a password reset email is not allowed to 
-          # pass through to recipients; being non-managed must be explicit
-          pass
         else:
-          j = json.loads(item['recipients'])
+          # not our domain -> skip
+          continue
+      
+        if vmail is None:
+          vmail = get_value_for_domain(
+            config.get_value("default_sender"), 
+            dest_domain
+        )
 
-          for rec in j:
-            filter_out = False
-            
-            # Filter out email eddresses that we don't want to actually 
-            # send any email (for example test domains, etc.)
-            for efilter in efilters:
-              if re.search(efilter, rec):
-                filter_out = True
-                break
-              
-            # Check if the email address belongs to one of our managed domains
-            # and if it does, that the vmail actually exists
-            if filter_out is False:
-              recdom = rec.split('@')[1]
+        if config.get_value("print_mail_info") is True:
+          logger.info("{dash} New email {dash}".format(dash="-"*30))
+          logger.info("From:    " + mail_from)
+          logger.info("To:      " + listsafe_str(mail_recipients["to"]))
+          logger.info("Date:    " + mail_date)
+          logger.info("Subject: " + mail_subject)
+          logger.info("Vmail:   " + vmail)
+          logger.info("Msg:     s3://{}/{}".format(s3bucket, s3key))
 
-              if recdom in config.get_value("email_domains"):
-                item = ddb.get_item(
-                  config.get_value('ddb_tablename'),
-                  'virtualemail',
-                  rec.lower()
-                )
-
-                if item is None:
-                  # Not found so we'll block this address out to make sure
-                  # there are no bounces
-                  filter_out = True
-                  _s = "Recipient {} is in one of our virtualmail domains but " \
-                       "such vmail address does not exist"
-                  logger.info(_s.format(rec))
-              
-            if filter_out is False and rec not in recipients:
-              recipients.append(rec)
-
-            elif filter_out is True:
-              logger.info("Recipient {} filtered out".format(rec))
-              
-    except Exception as e:
-      utils.handle_exception(
-        logger,
-        e,
-        'doing ddb lookup for virtualemail',
-        text=_msg
-      )
-      continue
-    
-    master_email = get_value_for_domain(
-      config.get_value("master_email"), 
-      dest_domain
-    )
-    
-    if (master_email is not None and master_email not in recipients):
-      recipients.append(master_email)
-    
-    if config.get_value("print_mail_info") is True:
-      logger.info("Recipients: " + listsafe_str(recipients))    
-    
-    bounces_email = get_value_for_domain(
-      config.get_value("bounces_email"), 
-      dest_domain
-    )    
-
-    headers["X-Virtualmail-Original-From"] = mail_from 
-    if messageid is not None:
-      headers["X-Virtualmail-Id"] = messageid
-    
-    try:
-      raw = reconstruct_email(t, vmail, recipients, bounces_email, headers)
-    except Exception as e:
-      utils.handle_exception(logger, e, 'reconstructing email', text=_msg)
-      continue
-    
-    try:
-      if len(recipients) > 0:
-        send_raw_email(raw)
+      except Exception as e:
+        utils.handle_exception(
+          logger,
+          e, 
+          'looking for destination and s3 values from message'
+        )
+        continue
+      
+      try:
+        log_to_ddb(
+          mail_date, 
+          mail_from, 
+          mail_recipients, 
+          mail_subject, 
+          s3key, 
+          s3bucket,
+          messageid
+        )
+      except PassthroughException as e:
+        t = e.text + "\n\n" + _msg if e.text is not None else _msg
+        utils.handle_exception(logger, e.e, e.when, text=t)
+      except Exception as e:
+        utils.handle_exception(logger, e, 'log inbound email to log ddb', text=_msg)
+          
+      if s3bucket is not None and s3key is not None:
+        try:
+          t = get_email_from_s3(s3bucket, s3key)
+        except Exception as e:
+          utils.handle_exception(e, 'retrieving email from s3', text=_msg)
+          continue
       else:
-        logger.info("No recipients, no email!")
-    except Exception as e:
-      utils.handle_exception(logger, e, 'sending email', text=_msg)
-      continue
+        t = email_body
+
+      efilters = config.get_value("email_filter")
+      recipients = []
+      try:
+        item = ddb.get_item(
+          config.get_value('ddb_tablename'),
+          'virtualemail',
+          vmail.lower()
+        )
+        if item is not None:
+          if (
+            re.search("password-reset-noreply@aws.amazon.com", 
+            mail_from, 
+            re.IGNORECASE
+          ) and ('managed' not in item or item['managed'] != False)):
+            # for a mananged account, a password reset email is not allowed to 
+            # pass through to recipients; being non-managed must be explicit
+            pass
+          else:
+            j = json.loads(item['recipients'])
+
+            for rec in j:
+              filter_out = False
+              
+              # Filter out email eddresses that we don't want to actually 
+              # send any email (for example test domains, etc.)
+              for efilter in efilters:
+                if re.search(efilter, rec):
+                  filter_out = True
+                  break
+                
+              # Check if the email address belongs to one of our managed domains
+              # and if it does, that the vmail actually exists
+              if filter_out is False:
+                recdom = rec.split('@')[1]
+
+                if recdom in config.get_value("email_domains"):
+                  item = ddb.get_item(
+                    config.get_value('ddb_tablename'),
+                    'virtualemail',
+                    rec.lower()
+                  )
+
+                  if item is None:
+                    # Not found so we'll block this address out to make sure
+                    # there are no bounces
+                    filter_out = True
+                    _s = "Recipient {} is in one of our virtualmail domains but " \
+                        "such vmail address does not exist"
+                    logger.info(_s.format(rec))
+                
+              if filter_out is False and rec not in recipients:
+                recipients.append(rec)
+
+              elif filter_out is True:
+                logger.info("Recipient {} filtered out".format(rec))
+                
+      except Exception as e:
+        utils.handle_exception(
+          logger,
+          e,
+          'doing ddb lookup for virtualemail',
+          text=_msg
+        )
+        continue
+      
+      master_email = get_value_for_domain(
+        config.get_value("master_email"), 
+        dest_domain
+      )
+      
+      if (master_email is not None and master_email not in recipients):
+        recipients.append(master_email)
+      
+      if config.get_value("print_mail_info") is True:
+        logger.info("Recipients: " + listsafe_str(recipients))    
+      
+      bounces_email = get_value_for_domain(
+        config.get_value("bounces_email"), 
+        dest_domain
+      )    
+
+      headers["X-Virtualmail-Original-From"] = mail_from 
+      if messageid is not None:
+        headers["X-Virtualmail-Id"] = messageid
+      
+      try:
+        raw = reconstruct_email(t, vmail, recipients, bounces_email, headers)
+      except Exception as e:
+        utils.handle_exception(logger, e, 'reconstructing email', text=_msg)
+        continue
+      
+      try:
+        if len(recipients) > 0:
+          send_raw_email(raw)
+        else:
+          logger.info("No recipients, no email!")
+      except Exception as e:
+        utils.handle_exception(logger, e, 'sending email', text=_msg)
+        continue
 
 
 def lambda_handler(event, context):
